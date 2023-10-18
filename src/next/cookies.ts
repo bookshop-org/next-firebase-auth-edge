@@ -104,7 +104,7 @@ export async function setAuthCookies(
     options.apiKey,
     options.tenantId
   );
-  const token = headers.get("Authorization")?.split(" ")[1] ?? "";
+  const token = headers.get("Next-Firebase-Authorization")?.split(" ")[1] ?? "";
   const idAndRefreshTokens = await getCustomIdAndRefreshTokens(
     token,
     options.apiKey
