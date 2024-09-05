@@ -1,17 +1,22 @@
-import { isNonNullObject, isURL } from "./validator";
-import { verify, VerifyOptions } from "./jwt/verify";
 import {
-  decodeProtectedHeader,
-  errors,
   JWTPayload,
+  KeyLike,
   ProtectedHeaderParameters,
-} from "jose";
-import { useEmulator } from "./firebase";
-import { AuthError, AuthErrorCode } from "./error";
+  createRemoteJWKSet,
+  cryptoRuntime,
+  decodeProtectedHeader,
+  errors
+} from 'jose';
+import {RemoteJWKSetOptions} from 'jose/dist/types/jwks/remote';
+import {debug} from '../debug';
+import {AuthError, AuthErrorCode} from './error';
+import {useEmulator} from './firebase';
+import {VerifyOptions, getPublicCryptoKey, verify} from './jwt/verify';
+import {isNonNullObject, isURL} from './validator';
 
-export const ALGORITHM_RS256 = "RS256" as const;
+export const ALGORITHM_RS256 = 'RS256' as const;
 
-type PublicKeys = { [key: string]: string };
+export type PublicKeys = {[key: string]: string};
 
 interface PublicKeysResponse {
   keys: PublicKeys;
@@ -24,7 +29,7 @@ export type DecodedToken = {
 };
 
 export interface SignatureVerifier {
-  verify(token: string, options?: VerifyOptions): Promise<void>;
+  verify(token: string, options: VerifyOptions): Promise<void>;
 }
 
 export interface KeyFetcher {
@@ -32,15 +37,15 @@ export interface KeyFetcher {
 }
 
 function getExpiresAt(res: Response) {
-  if (!res.headers.has("cache-control")) {
+  if (!res.headers.has('cache-control')) {
     return 0;
   }
 
-  const cacheControlHeader: string = res.headers.get("cache-control")!;
-  const parts = cacheControlHeader.split(",");
+  const cacheControlHeader: string = res.headers.get('cache-control')!;
+  const parts = cacheControlHeader.split(',');
   const maxAge = parts.reduce((acc, part) => {
-    const subParts = part.trim().split("=");
-    if (subParts[0] === "max-age") {
+    const subParts = part.trim().split('=');
+    if (subParts[0] === 'max-age') {
       return +subParts[1];
     }
 
@@ -56,21 +61,31 @@ export class UrlKeyFetcher implements KeyFetcher {
   constructor(private clientCertUrl: string) {
     if (!isURL(clientCertUrl)) {
       throw new Error(
-        "The provided public client certificate URL is not a valid URL."
+        'The provided public client certificate URL is not a valid URL.'
       );
     }
   }
 
   private async fetchPublicKeysResponse(url: URL): Promise<PublicKeysResponse> {
     const res = await fetch(url);
+    const headers: Record<string, string> = {};
+
+    res.headers.forEach((value, key) => {
+      headers[key] = value;
+    });
+
+    debug('Public keys fetched', {
+      responseHeaders: headers,
+      cryptoRuntime
+    });
 
     if (!res.ok) {
-      let errorMessage = "Error fetching public keys for Google certs: ";
+      let errorMessage = 'Error fetching public keys for Google certs: ';
       const data = await res.json();
       if (data.error) {
         errorMessage += `${data.error}`;
         if (data.error_description) {
-          errorMessage += " (" + data.error_description + ")";
+          errorMessage += ' (' + data.error_description + ')';
         }
       } else {
         errorMessage += `${await res.text()}`;
@@ -82,7 +97,7 @@ export class UrlKeyFetcher implements KeyFetcher {
 
     if (data.error) {
       throw new Error(
-        "Error fetching public keys for Google certs: " + data.error
+        'Error fetching public keys for Google certs: ' + data.error
       );
     }
 
@@ -90,13 +105,27 @@ export class UrlKeyFetcher implements KeyFetcher {
 
     return {
       keys: data,
-      expiresAt,
+      expiresAt
     };
   }
 
   private async fetchAndCachePublicKeys(url: URL): Promise<PublicKeys> {
+    debug(
+      'No public keys found in cache. Fetching public keys from Google...',
+      {
+        cryptoRuntime
+      }
+    );
+
     const response = await this.fetchPublicKeysResponse(url);
+
     keyResponseCache.set(url.toString(), response);
+
+    debug('Public keys cached', {
+      cacheKey: url.toString(),
+      expiresAt: response.expiresAt,
+      cryptoRuntime
+    });
 
     return response.keys;
   }
@@ -109,8 +138,14 @@ export class UrlKeyFetcher implements KeyFetcher {
       return this.fetchAndCachePublicKeys(url);
     }
 
-    const { keys, expiresAt } = cachedResponse;
+    const {keys, expiresAt} = cachedResponse;
     const now = Date.now();
+
+    debug('Get public keys from cache', {
+      expiresAt,
+      now,
+      cryptoRuntime
+    });
 
     if (expiresAt <= now) {
       return this.fetchAndCachePublicKeys(url);
@@ -120,10 +155,55 @@ export class UrlKeyFetcher implements KeyFetcher {
   }
 }
 
+export class JWKSSignatureVerifier implements SignatureVerifier {
+  private jwksUrl: URL;
+
+  constructor(jwksUrl: string, private options?: RemoteJWKSetOptions) {
+    if (!isURL(jwksUrl)) {
+      throw new Error('The provided JWKS URL is not a valid URL.');
+    }
+
+    this.jwksUrl = new URL(jwksUrl);
+  }
+
+  private async getPublicKey(
+    header: ProtectedHeaderParameters
+  ): Promise<KeyLike> {
+    const getKey = createRemoteJWKSet(this.jwksUrl, this.options);
+
+    return getKey(header);
+  }
+
+  public async verify(token: string, options: VerifyOptions): Promise<void> {
+    const header = decodeProtectedHeader(token);
+
+    try {
+      await verify(token, () => this.getPublicKey(header), options);
+    } catch (e) {
+      if (e instanceof errors.JWKSMultipleMatchingKeys) {
+        for await (const publicKey of e) {
+          try {
+            await verify(token, () => Promise.resolve(publicKey), options);
+            return;
+          } catch (innerError) {
+            if (innerError instanceof errors.JWSSignatureVerificationFailed) {
+              continue;
+            }
+            throw innerError;
+          }
+        }
+        throw new errors.JWSSignatureVerificationFailed();
+      }
+
+      throw e;
+    }
+  }
+}
+
 export class PublicKeySignatureVerifier implements SignatureVerifier {
   constructor(private keyFetcher: KeyFetcher) {
     if (!isNonNullObject(keyFetcher)) {
-      throw new Error("The provided key fetcher is not an object or null.");
+      throw new Error('The provided key fetcher is not an object or null.');
     }
   }
 
@@ -133,22 +213,24 @@ export class PublicKeySignatureVerifier implements SignatureVerifier {
     return new PublicKeySignatureVerifier(new UrlKeyFetcher(clientCertUrl));
   }
 
-  private async getPublicKey(header: ProtectedHeaderParameters) {
+  private async getPublicKey(
+    header: ProtectedHeaderParameters
+  ): Promise<KeyLike> {
     if (useEmulator()) {
-      return "";
+      return {type: 'none'};
     }
 
-    return fetchPublicKey(this.keyFetcher, header);
+    return fetchPublicKey(this.keyFetcher, header).then(getPublicCryptoKey);
   }
 
-  public async verify(token: string, options?: VerifyOptions): Promise<void> {
+  public async verify(token: string, options: VerifyOptions): Promise<void> {
     const header = decodeProtectedHeader(token);
 
     try {
       await verify(token, () => this.getPublicKey(header), options);
     } catch (e) {
       if (e instanceof AuthError && e.code === AuthErrorCode.NO_KID_IN_HEADER) {
-        await this.verifyWithoutKid(token);
+        await this.verifyWithoutKid(token, options);
         return;
       }
 
@@ -156,20 +238,28 @@ export class PublicKeySignatureVerifier implements SignatureVerifier {
     }
   }
 
-  private async verifyWithoutKid(token: string): Promise<void> {
+  private async verifyWithoutKid(
+    token: string,
+    options: VerifyOptions
+  ): Promise<void> {
     const publicKeys = await this.keyFetcher.fetchPublicKeys();
 
-    return this.verifyWithAllKeys(token, publicKeys);
+    return this.verifyWithAllKeys(token, publicKeys, options);
   }
 
   private async verifyWithAllKeys(
     token: string,
-    keys: { [key: string]: string }
+    keys: {[key: string]: string},
+    options: VerifyOptions
   ): Promise<void> {
     const promises: Promise<boolean>[] = [];
 
     Object.values(keys).forEach((key) => {
-      const promise = verify(token, async () => key)
+      const promise = verify(
+        token,
+        async () => getPublicCryptoKey(key),
+        options
+      )
         .then(() => true)
         .catch((error) => {
           if (error instanceof errors.JWTExpired) {

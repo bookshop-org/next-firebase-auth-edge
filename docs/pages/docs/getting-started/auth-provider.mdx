@@ -1,0 +1,34 @@
+# AuthProvider
+
+To exchange user data between server and client components, we could use custom `AuthContext` created in [previous step](/docs/getting-started/auth-context)
+
+## Example AuthProvider
+
+The following is an example implementation of custom `AuthProvider` component that uses `AuthContext` to share user data between server and client components.
+
+```tsx filename="AuthProvider.tsx"
+'use client';
+
+import * as React from 'react';
+import {AuthContext, User} from './AuthContext';
+
+export interface AuthProviderProps {
+  user: User | null;
+  children: React.ReactNode;
+}
+
+export const AuthProvider: React.FunctionComponent<AuthProviderProps> = ({
+  user,
+  children
+}) => {
+  return (
+    <AuthContext.Provider
+      value={{
+        user
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
+};
+```

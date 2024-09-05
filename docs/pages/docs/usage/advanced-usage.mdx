@@ -1,0 +1,58 @@
+# Advanced usage
+
+Authentication middleware might not fully support every use-case. To help you with more complex authentication flows, `next-firebase-auth-edge` provides a set of low-level building blocks:
+
+## getFirebaseAuth
+
+`getFirebaseAuth` function provides a number of server-side methods to handle more complex authentication flows.
+
+```tsx
+import {getFirebaseAuth} from 'next-firebase-auth-edge';
+
+const {
+  getCustomIdAndRefreshTokens,
+  verifyIdToken,
+  createCustomToken,
+  handleTokenRefresh,
+  getUser,
+  getUserByEmail,
+  createUser,
+  updateUser,
+  deleteUser,
+  verifyAndRefreshExpiredIdToken,
+  setCustomUserClaims
+} = getFirebaseAuth({
+  apiKey: 'YOUR FIREBASE API KEY',
+  serviceAccount: {
+    projectId: 'your-firebase-project-id',
+    clientEmail:
+      'firebase-adminsdk-nnw48@your-firebase-project-id.iam.gserviceaccount.com',
+    privateKey: '-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n'
+  }
+});
+```
+
+### Options
+
+| Name             | Type                                                             |                                                                                                                | Description                                                                                                                                                                                       |
+| ---------------- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| apiKey           | `string`                                                         | **Required**                                                                                                   | Firebase Web API Key retrieved from Firebase Project settings overview page. Please note that this API Key will be visible only after you enable Firebase Authentication in your Firebase project |
+| serviceAccount   | `{ projectId: string; clientEmail: string; privateKey: string }` | Optional in authenticated [Google Cloud Run](https://cloud.google.com/run) environment. Otherwise **required** | Firebase Service Account credentials                                                                                                                                                              |
+| tenantId         | `string`                                                         | Optional                                                                                                       | Specify if your project supports [multi-tenancy](https://cloud.google.com/identity-platform/docs/multi-tenancy-authentication)                                                                    |
+| serviceAccountId | `string`                                                         | Optional                                                                                                       | Forces specific service account ID inside authenticated [Google Cloud Run](https://cloud.google.com/run) environment                                                                              |
+
+### Methods
+
+| Name                           | Type                                                                                                                                                                               | Description                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| getCustomIdAndRefreshTokens    | `(idToken: string, options?: {appCheckToken?: string, referer?: string}) => Promise<CustomTokens>`                                                                                 | Generates a new set of id and refresh tokens for user identified by provided `idToken`. Accepts optional `appCheckToken` as an option. You should pass it if your app supports [App Check](https://firebase.google.com/docs/app-check). You can use `referer` option if your api key is restricted by a domain. `CustomTokens` is an object that can be described by `{ idToken: string; refreshToken: string; customToken: string; }` |
+| verifyIdToken                  | `(idToken: string, option?: {checkRevoked?: boolean, referer?: string, currentDate?: Date}) => Promise<DecodedIdToken>`                                                            | Verifies provided `idToken`. Throws `AuthError`. See [source code](https://github.com/awinogrodzki/next-firebase-auth-edge/blob/main/src/auth/error.ts) for possible error types. `checkRevoked` indicates if a token should be verified against Firebase APIs. `referer` should be passed if your api key is restricted by a domain. Pass custom `currentDate`, if you need to control the date token is validated against            |
+| verifyAndRefreshExpiredIdToken | `(tokens: {   idToken: string, refreshToken: string, customToken: string },  options?: {checkRevoked?: boolean, referer?: string, currentDate?: Date}) => Promise<VerifiedTokens>` | Verifies provided `idToken`. If token is expired, uses `refreshToken` to validate it. Throws `InvalidTokenError` if credentials are missing or malformed. Available options are the same as in `verifyIdToken` method. `VerifiedTokens` is an object that can be described by `{ idToken: string; refreshToken: string; customToken: string; decodedIdToken: DecodedIdToken }`                                                         |
+| createCustomToken              | `(uid: string, developerClaims?: object) => Promise<string>`                                                                                                                       | Creates a custom token for given firebase user. Optionally, it's possible to attach additional`developerClaims`                                                                                                                                                                                                                                                                                                                        |
+| handleTokenRefresh             | `(refreshToken: string, options?: {referer?: string}) => Promise<VerifiedTokens>`                                                                                                  | Returns id`token`and`decodedToken`for given`refreshToken`. `referer`should be passed if api key is restricted by a domain                                                                                                                                                                                                                                                                                                              |
+| getUser                        | `(uid: string) => Promise<UserRecord>`                                                                                                                                             | Returns Firebase UserRecord by uid                                                                                                                                                                                                                                                                                                                                                                                                     |
+| getUserByEmail                 | `(email: string) => Promise<UserRecord>`                                                                                                                                           | Returns Firebase UserRecord by email                                                                                                                                                                                                                                                                                                                                                                                                   |
+| createUser                     | `(request: CreateRequest) => Promise<UserRecord>`                                                                                                                                  | Creates user and returns UserRecord. See official firebase [Create a user](https://firebase.google.com/docs/auth/admin/manage-users#create_a_user) docs for request examples                                                                                                                                                                                                                                                           |
+| updateUser                     | `(uid: string, request: UpdateRequest) => Promise<UserRecord>`                                                                                                                     | Updates user by uid and returns UserRecord. See official firebase [Update a user](https://firebase.google.com/docs/auth/admin/manage-users#update_a_user) docs for request examples                                                                                                                                                                                                                                                    |
+| deleteUser                     | `(uid: string) => Promise<void>`                                                                                                                                                   | Deletes user                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| setCustomUserClaims            | `(uid: string, customClaims: object ∣ null) => Promise<void>`                                                                                                                      | Sets custom claims for given user. Overwrites existing values. Use`getUser` to fetch current claims                                                                                                                                                                                                                                                                                                                                    |

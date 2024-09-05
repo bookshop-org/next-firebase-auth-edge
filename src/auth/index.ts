@@ -1,19 +1,37 @@
-import { useEmulator } from "./firebase";
-import { createIdTokenVerifier, DecodedIdToken } from "./token-verifier";
+import {debug} from '../debug';
 import {
   AuthRequestHandler,
   CreateRequest,
-  UpdateRequest,
-} from "./auth-request-handler";
-import { ServiceAccount, ServiceAccountCredential } from "./credential";
-import { UserRecord } from "./user-record";
-import { createFirebaseTokenGenerator } from "./token-generator";
-import { AuthError, AuthErrorCode } from "./error";
-import { VerifyOptions } from "./jwt/verify";
+  UpdateRequest
+} from './auth-request-handler';
+import {
+  ServiceAccount,
+  ServiceAccountCredential,
+  Credential
+} from './credential';
+import {CustomTokens, VerifiedTokens} from './custom-token';
+import {getApplicationDefault} from './default-credential';
+import {
+  AuthError,
+  AuthErrorCode,
+  InvalidTokenError,
+  InvalidTokenReason
+} from './error';
+import {useEmulator} from './firebase';
+import {VerifyOptions} from './jwt/verify';
+import {createFirebaseTokenGenerator} from './token-generator';
+import {createIdTokenVerifier, DecodedIdToken} from './token-verifier';
+import {UserRecord} from './user-record';
 
 const getCustomTokenEndpoint = (apiKey: string) => {
-  if (useEmulator()) {
-    return `http://${process.env
+  if (useEmulator() && process.env.FIREBASE_AUTH_EMULATOR_HOST) {
+    let protocol = 'http://';
+    if (
+      (process.env.FIREBASE_AUTH_EMULATOR_HOST as string).startsWith('http://')
+    ) {
+      protocol = '';
+    }
+    return `${protocol}${process.env
       .FIREBASE_AUTH_EMULATOR_HOST!}/identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=${apiKey}`;
   }
 
@@ -21,31 +39,56 @@ const getCustomTokenEndpoint = (apiKey: string) => {
 };
 
 const getRefreshTokenEndpoint = (apiKey: string) => {
-  if (useEmulator()) {
-    return `http://${process.env
+  if (useEmulator() && process.env.FIREBASE_AUTH_EMULATOR_HOST) {
+    let protocol = 'http://';
+    if (
+      (process.env.FIREBASE_AUTH_EMULATOR_HOST as string).startsWith('http://')
+    ) {
+      protocol = '';
+    }
+
+    return `${protocol}${process.env
       .FIREBASE_AUTH_EMULATOR_HOST!}/securetoken.googleapis.com/v1/token?key=${apiKey}`;
   }
 
   return `https://securetoken.googleapis.com/v1/token?key=${apiKey}`;
 };
 
+interface CustomTokenToIdAndRefreshTokensOptions {
+  tenantId?: string;
+  appCheckToken?: string;
+  referer?: string;
+}
+
 export async function customTokenToIdAndRefreshTokens(
   customToken: string,
   firebaseApiKey: string,
-  tenantId?: string
+  options: CustomTokenToIdAndRefreshTokensOptions
 ): Promise<IdAndRefreshTokens> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(options.referer ? {Referer: options.referer} : {})
+  };
+
+  const body: Record<string, string | boolean> = {
+    token: customToken,
+    returnSecureToken: true
+  };
+
+  if (options.appCheckToken) {
+    headers['X-Firebase-AppCheck'] = options.appCheckToken;
+  }
+
+  if (options.tenantId) {
+    body['tenantId'] = options.tenantId;
+  }
+
   const refreshTokenResponse = await fetch(
     getCustomTokenEndpoint(firebaseApiKey),
     {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        tenantId,
-        token: customToken,
-        returnSecureToken: true,
-      }),
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body)
     }
   );
 
@@ -60,15 +103,15 @@ export async function customTokenToIdAndRefreshTokens(
 
   return {
     idToken: refreshTokenJSON.idToken,
-    refreshToken: refreshTokenJSON.refreshToken,
+    refreshToken: refreshTokenJSON.refreshToken
   };
 }
 
 interface ErrorResponse {
   error: {
     code: number;
-    message: "USER_NOT_FOUND" | "TOKEN_EXPIRED";
-    status: "INVALID_ARGUMENT";
+    message: 'USER_NOT_FOUND' | 'TOKEN_EXPIRED';
+    status: 'INVALID_ARGUMENT';
   };
   error_description?: string;
 }
@@ -76,8 +119,8 @@ interface ErrorResponse {
 interface UserNotFoundResponse extends ErrorResponse {
   error: {
     code: 400;
-    message: "USER_NOT_FOUND";
-    status: "INVALID_ARGUMENT";
+    message: 'USER_NOT_FOUND';
+    status: 'INVALID_ARGUMENT';
   };
 }
 
@@ -86,28 +129,34 @@ const isUserNotFoundResponse = (
 ): data is UserNotFoundResponse => {
   return (
     (data as UserNotFoundResponse)?.error?.code === 400 &&
-    (data as UserNotFoundResponse)?.error?.message === "USER_NOT_FOUND"
+    (data as UserNotFoundResponse)?.error?.message === 'USER_NOT_FOUND'
   );
 };
 
+export interface TokenRefreshOptions {
+  apiKey: string;
+  referer?: string;
+}
+
 const refreshExpiredIdToken = async (
   refreshToken: string,
-  apiKey: string
-): Promise<string> => {
+  options: TokenRefreshOptions
+): Promise<IdAndRefreshTokens> => {
   // https://firebase.google.com/docs/reference/rest/auth/#section-refresh-token
-  const response = await fetch(getRefreshTokenEndpoint(apiKey), {
-    method: "POST",
+  const response = await fetch(getRefreshTokenEndpoint(options.apiKey), {
+    method: 'POST',
     headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
+      'Content-Type': 'application/x-www-form-urlencoded',
+      ...(options.referer ? {Referer: options.referer} : {})
     },
-    body: `grant_type=refresh_token&refresh_token=${refreshToken}`,
+    body: `grant_type=refresh_token&refresh_token=${refreshToken}`
   });
 
   if (!response.ok) {
     const data = await response.json();
     const errorMessage = `Error fetching access token: ${JSON.stringify(
       data.error
-    )} ${data.error_description ? `(${data.error_description})` : ""}`;
+    )} ${data.error_description ? `(${data.error_description})` : ''}`;
 
     if (isUserNotFoundResponse(data)) {
       throw new AuthError(AuthErrorCode.USER_NOT_FOUND);
@@ -118,7 +167,10 @@ const refreshExpiredIdToken = async (
 
   const data = await response.json();
 
-  return data.id_token;
+  return {
+    idToken: data.id_token,
+    refreshToken: data.refresh_token
+  };
 };
 
 export function isUserNotFoundError(error: unknown): error is AuthError {
@@ -156,35 +208,101 @@ export interface IdAndRefreshTokens {
 }
 
 export interface Tokens {
+  customToken: string;
   decodedToken: DecodedIdToken;
   token: string;
 }
 
-export function getFirebaseAuth(
-  serviceAccount: ServiceAccount,
-  apiKey: string,
-  tenantId?: string
-) {
-  const authRequestHandler = new AuthRequestHandler(serviceAccount, tenantId);
-  const credential = new ServiceAccountCredential(serviceAccount);
-  const tokenGenerator = createFirebaseTokenGenerator(credential, tenantId);
+export interface UsersList {
+  users: UserRecord[];
+  nextPageToken?: string;
+}
+
+export interface GetCustomIdAndRefreshTokensOptions {
+  appCheckToken?: string;
+  referer?: string;
+}
+
+interface AuthOptions {
+  credential: Credential;
+  apiKey: string;
+  tenantId?: string;
+  serviceAccountId?: string;
+}
+
+export type Auth = ReturnType<typeof getAuth>;
+
+const DEFAULT_VERIFY_OPTIONS = {referer: ''};
+
+function getAuth(options: AuthOptions) {
+  const credential = options.credential ?? getApplicationDefault();
+  const authRequestHandler = new AuthRequestHandler(credential, {
+    tenantId: options.tenantId
+  });
+  const tokenGenerator = createFirebaseTokenGenerator(
+    credential,
+    options.tenantId
+  );
 
   const handleTokenRefresh = async (
     refreshToken: string,
-    firebaseApiKey: string
-  ): Promise<Tokens> => {
-    const newToken = await refreshExpiredIdToken(refreshToken, firebaseApiKey);
-    const decodedToken = await verifyIdToken(newToken);
+    tokenRefreshOptions: {referer?: string} = {}
+  ): Promise<VerifiedTokens> => {
+    const {idToken, refreshToken: newRefreshToken} =
+      await refreshExpiredIdToken(refreshToken, {
+        apiKey: options.apiKey,
+        referer: tokenRefreshOptions.referer
+      });
+
+    const decodedIdToken = await verifyIdToken(idToken, {
+      referer: tokenRefreshOptions.referer
+    });
+
+    const customToken = await createCustomToken(decodedIdToken.uid, {
+      email_verified: decodedIdToken.email_verified,
+      source_sign_in_provider: decodedIdToken.firebase.sign_in_provider
+    });
 
     return {
-      decodedToken: decodedToken,
-      token: newToken,
+      decodedIdToken,
+      idToken,
+      refreshToken: newRefreshToken,
+      customToken
     };
   };
 
-  async function getUser(uid: string): Promise<UserRecord> {
+  async function getUser(uid: string): Promise<UserRecord | null> {
     return authRequestHandler.getAccountInfoByUid(uid).then((response: any) => {
       // Returns the user record populated with server response.
+      return response.users?.length ? new UserRecord(response.users[0]) : null;
+    });
+  }
+
+  async function listUsers(
+    nextPageToken?: string,
+    maxResults?: number
+  ): Promise<UsersList> {
+    return authRequestHandler
+      .listUsers(nextPageToken, maxResults)
+      .then((response) => {
+        const result: UsersList = {
+          users: response.users.map((user) => new UserRecord(user))
+        };
+
+        if (response.nextPageToken) {
+          result.nextPageToken = response.nextPageToken;
+        }
+
+        return result;
+      });
+  }
+
+  async function getUserByEmail(email: string): Promise<UserRecord> {
+    return authRequestHandler.getAccountInfoByEmail(email).then((response) => {
+      if (!response.users || !response.users.length) {
+        throw new AuthError(AuthErrorCode.USER_NOT_FOUND);
+      }
+
       return new UserRecord(response.users[0]);
     });
   }
@@ -192,7 +310,11 @@ export function getFirebaseAuth(
   async function verifyDecodedJWTNotRevokedOrDisabled(
     decodedIdToken: DecodedIdToken
   ): Promise<DecodedIdToken> {
-    return getUser(decodedIdToken.sub).then((user: UserRecord) => {
+    return getUser(decodedIdToken.sub).then((user: UserRecord | null) => {
+      if (!user) {
+        throw new AuthError(AuthErrorCode.USER_NOT_FOUND);
+      }
+
       if (user.disabled) {
         throw new AuthError(AuthErrorCode.USER_DISABLED);
       }
@@ -211,11 +333,12 @@ export function getFirebaseAuth(
 
   async function verifyIdToken(
     idToken: string,
-    checkRevoked = false,
-    options?: VerifyOptions
+    options: VerifyOptions = DEFAULT_VERIFY_OPTIONS
   ): Promise<DecodedIdToken> {
-    const idTokenVerifier = createIdTokenVerifier(serviceAccount.projectId);
+    const projectId = await credential.getProjectId();
+    const idTokenVerifier = createIdTokenVerifier(projectId);
     const decodedIdToken = await idTokenVerifier.verifyJWT(idToken, options);
+    const checkRevoked = options.checkRevoked ?? false;
 
     if (checkRevoked) {
       return verifyDecodedJWTNotRevokedOrDisabled(decodedIdToken);
@@ -225,24 +348,33 @@ export function getFirebaseAuth(
   }
 
   async function verifyAndRefreshExpiredIdToken(
-    token: string,
-    refreshToken: string,
-    options?: VerifyOptions
-  ): Promise<Tokens | null> {
+    customTokens: CustomTokens,
+    verifyOptions: VerifyOptions = DEFAULT_VERIFY_OPTIONS
+  ): Promise<VerifiedTokens> {
     return await handleExpiredToken(
       async () => {
-        const decodedToken = await verifyIdToken(token, false, options);
-        return { token, decodedToken };
+        const decodedIdToken = await verifyIdToken(
+          customTokens.idToken,
+          verifyOptions
+        );
+        return {
+          idToken: customTokens.idToken,
+          decodedIdToken,
+          refreshToken: customTokens.refreshToken,
+          customToken: customTokens.customToken
+        };
       },
       async () => {
-        if (refreshToken) {
-          return handleTokenRefresh(refreshToken, apiKey);
+        if (customTokens.refreshToken) {
+          return handleTokenRefresh(customTokens.refreshToken, {
+            referer: verifyOptions.referer
+          });
         }
 
-        return null;
+        throw new InvalidTokenError(InvalidTokenReason.MISSING_REFRESH_TOKEN);
       },
       async () => {
-        return null;
+        throw new InvalidTokenError(InvalidTokenReason.INVALID_CREDENTIALS);
       }
     );
   }
@@ -256,16 +388,32 @@ export function getFirebaseAuth(
 
   async function getCustomIdAndRefreshTokens(
     idToken: string,
-    firebaseApiKey: string
-  ) {
-    const tenant = await verifyIdToken(idToken);
-    const customToken = await createCustomToken(tenant.uid);
+    customTokensOptions: GetCustomIdAndRefreshTokensOptions = DEFAULT_VERIFY_OPTIONS
+  ): Promise<CustomTokens> {
+    const decodedToken = await verifyIdToken(idToken, {
+      referer: customTokensOptions.referer
+    });
+    const customToken = await createCustomToken(decodedToken.uid, {
+      email_verified: decodedToken.email_verified,
+      source_sign_in_provider: decodedToken.firebase.sign_in_provider
+    });
 
-    return customTokenToIdAndRefreshTokens(
+    debug('Generated custom token based on provided idToken', {customToken});
+
+    const idAndRefreshTokens = await customTokenToIdAndRefreshTokens(
       customToken,
-      firebaseApiKey,
-      tenantId
+      options.apiKey,
+      {
+        tenantId: options.tenantId,
+        appCheckToken: customTokensOptions.appCheckToken,
+        referer: customTokensOptions.referer
+      }
     );
+
+    return {
+      ...idAndRefreshTokens,
+      customToken
+    };
   }
 
   async function deleteUser(uid: string): Promise<void> {
@@ -280,9 +428,18 @@ export function getFirebaseAuth(
   }
 
   async function createUser(properties: CreateRequest): Promise<UserRecord> {
-    return authRequestHandler.createNewAccount(properties).then((uid) => {
-      return getUser(uid);
-    });
+    return authRequestHandler
+      .createNewAccount(properties)
+      .then((uid) => getUser(uid))
+      .then((user) => {
+        if (!user) {
+          throw new AuthError(
+            AuthErrorCode.INTERNAL_ERROR,
+            'Could not get recently created user from database. Most likely it was deleted.'
+          );
+        }
+        return user;
+      });
   }
 
   async function updateUser(
@@ -291,8 +448,16 @@ export function getFirebaseAuth(
   ): Promise<UserRecord> {
     return authRequestHandler
       .updateExistingAccount(uid, properties)
-      .then((existingUid) => {
-        return getUser(existingUid);
+      .then((existingUid) => getUser(existingUid))
+      .then((user) => {
+        if (!user) {
+          throw new AuthError(
+            AuthErrorCode.INTERNAL_ERROR,
+            'Could not get recently updated user from database. Most likely it was deleted.'
+          );
+        }
+
+        return user;
       });
   }
 
@@ -305,7 +470,57 @@ export function getFirebaseAuth(
     deleteUser,
     setCustomUserClaims,
     getUser,
+    getUserByEmail,
     updateUser,
     createUser,
+    listUsers
   };
+}
+
+function isFirebaseAuthOptions(
+  options: FirebaseAuthOptions | ServiceAccount
+): options is FirebaseAuthOptions {
+  const serviceAccount = options as ServiceAccount;
+
+  return (
+    !serviceAccount.privateKey ||
+    !serviceAccount.projectId ||
+    !serviceAccount.clientEmail
+  );
+}
+
+export interface FirebaseAuthOptions {
+  serviceAccount?: ServiceAccount;
+  apiKey: string;
+  tenantId?: string;
+  serviceAccountId?: string;
+}
+export function getFirebaseAuth(options: FirebaseAuthOptions): Auth;
+/** @deprecated Use `FirebaseAuthOptions` configuration object instead */
+export function getFirebaseAuth(
+  serviceAccount: ServiceAccount,
+  apiKey: string,
+  tenantId?: string
+): Auth;
+export function getFirebaseAuth(
+  serviceAccount: ServiceAccount | FirebaseAuthOptions,
+  apiKey?: string,
+  tenantId?: string
+): Auth {
+  if (!isFirebaseAuthOptions(serviceAccount)) {
+    const credential = new ServiceAccountCredential(serviceAccount);
+
+    return getAuth({credential, apiKey: apiKey!, tenantId});
+  }
+
+  const options = serviceAccount;
+
+  return getAuth({
+    credential: options.serviceAccount
+      ? new ServiceAccountCredential(options.serviceAccount)
+      : getApplicationDefault(),
+    apiKey: options.apiKey,
+    tenantId: options.tenantId,
+    serviceAccountId: options.serviceAccountId
+  });
 }

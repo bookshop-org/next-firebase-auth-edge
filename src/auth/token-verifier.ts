@@ -1,15 +1,27 @@
-import { CLIENT_CERT_URL, FIREBASE_AUDIENCE, useEmulator } from "./firebase";
+import {decodeJwt, decodeProtectedHeader, errors} from 'jose';
+import {JOSEError} from 'jose/dist/types/util/errors';
+import {AuthError, AuthErrorCode} from './error';
+import {CLIENT_CERT_URL, FIREBASE_AUDIENCE, useEmulator} from './firebase';
+import {VerifyOptions} from './jwt/verify';
 import {
   ALGORITHM_RS256,
   DecodedToken,
   PublicKeySignatureVerifier,
-  SignatureVerifier,
-} from "./signature-verifier";
-import { isURL } from "./validator";
-import { decodeJwt, decodeProtectedHeader, errors } from "jose";
-import { JOSEError } from "jose/dist/types/util/errors";
-import { AuthError, AuthErrorCode } from "./error";
-import { VerifyOptions } from "./jwt/verify";
+  SignatureVerifier
+} from './signature-verifier';
+import {mapJwtPayloadToDecodedIdToken} from './utils';
+import {isURL} from './validator';
+
+export interface FirebaseClaims {
+  identities: {
+    [key: string]: any;
+  };
+  sign_in_provider: string;
+  sign_in_second_factor?: string;
+  second_factor_identifier?: string;
+  tenant?: string;
+  [key: string]: any;
+}
 
 export interface DecodedIdToken {
   aud: string;
@@ -17,16 +29,8 @@ export interface DecodedIdToken {
   email?: string;
   email_verified?: boolean;
   exp: number;
-  firebase: {
-    identities: {
-      [key: string]: any;
-    };
-    sign_in_provider: string;
-    sign_in_second_factor?: string;
-    second_factor_identifier?: string;
-    tenant?: string;
-    [key: string]: any;
-  };
+  firebase: FirebaseClaims;
+  source_sign_in_provider: string;
   iat: number;
   iss: string;
   phone_number?: string;
@@ -47,7 +51,7 @@ export class FirebaseTokenVerifier {
     if (!isURL(clientCertUrl)) {
       throw new AuthError(
         AuthErrorCode.INVALID_ARGUMENT,
-        "The provided public client certificate URL is an invalid URL."
+        'The provided public client certificate URL is an invalid URL.'
       );
     }
 
@@ -57,7 +61,7 @@ export class FirebaseTokenVerifier {
 
   public async verifyJWT(
     jwtToken: string,
-    options?: VerifyOptions
+    options: VerifyOptions
   ): Promise<DecodedIdToken> {
     const decoded = await this.decodeAndVerify(
       jwtToken,
@@ -65,23 +69,21 @@ export class FirebaseTokenVerifier {
       options
     );
 
-    const decodedIdToken = decoded.payload as DecodedIdToken;
-    decodedIdToken.uid = decodedIdToken.sub;
-    return decodedIdToken;
+    return mapJwtPayloadToDecodedIdToken(decoded.payload);
   }
 
   private async decodeAndVerify(
     token: string,
     projectId: string,
-    options?: VerifyOptions
+    options: VerifyOptions
   ): Promise<DecodedToken> {
     const header = decodeProtectedHeader(token);
     const payload = decodeJwt(token);
 
-    this.verifyContent({ header, payload }, projectId);
+    this.verifyContent({header, payload}, projectId);
     await this.verifySignature(token, options);
 
-    return { header, payload };
+    return {header, payload};
   }
 
   private verifyContent(
@@ -92,7 +94,7 @@ export class FirebaseTokenVerifier {
     const payload = fullDecodedToken && fullDecodedToken.payload;
 
     let errorMessage: string | undefined;
-    if (!useEmulator() && typeof header.kid === "undefined") {
+    if (!useEmulator() && typeof header.kid === 'undefined') {
       const isCustomToken = payload.aud === FIREBASE_AUDIENCE;
       if (isCustomToken) {
         errorMessage = `idToken was expected, but custom token was provided`;
@@ -103,8 +105,8 @@ export class FirebaseTokenVerifier {
       errorMessage = `Incorrect algorithm. ${ALGORITHM_RS256} expected, ${header.alg} provided`;
     } else if (payload.iss !== this.issuer + projectId) {
       errorMessage = `idToken has incorrect "iss" (issuer) claim. Expected ${this.issuer}${projectId}, but got ${payload.iss}`;
-    } else if (typeof payload.sub !== "string") {
-    } else if (payload.sub === "") {
+    } else if (typeof payload.sub !== 'string') {
+    } else if (payload.sub === '') {
       errorMessage = `idToken has an empty string "sub" (subject) claim.`;
     } else if (payload.sub.length > 128) {
       errorMessage = `idToken has "sub" (subject) claim longer than 128 characters.`;
@@ -117,7 +119,7 @@ export class FirebaseTokenVerifier {
 
   private verifySignature(
     jwtToken: string,
-    options?: VerifyOptions
+    options: VerifyOptions
   ): Promise<void> {
     return this.signatureVerifier.verify(jwtToken, options).catch((error) => {
       throw this.mapJoseErrorToAuthError(error);
@@ -150,7 +152,7 @@ export function createIdTokenVerifier(
 ): FirebaseTokenVerifier {
   return new FirebaseTokenVerifier(
     CLIENT_CERT_URL,
-    "https://securetoken.google.com/",
+    'https://securetoken.google.com/',
     projectId
   );
 }

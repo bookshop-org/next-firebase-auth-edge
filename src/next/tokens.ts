@@ -1,19 +1,34 @@
-import type { RequestCookies } from "next/dist/server/web/spec-extension/cookies";
-import type { ReadonlyRequestCookies } from "next/dist/server/web/spec-extension/adapters/request-cookies";
-import { ServiceAccount } from "../auth/credential";
-import { getSignatureCookieName } from "../auth/cookies";
-import { getFirebaseAuth, IdAndRefreshTokens, Tokens } from "../auth";
-import { get } from "../auth/cookies/get";
+import {decodeJwt} from 'jose';
+import {NextApiRequest} from 'next';
+import type {ReadonlyRequestCookies} from 'next/dist/server/web/spec-extension/adapters/request-cookies';
+import type {RequestCookies} from 'next/dist/server/web/spec-extension/cookies';
+import {Tokens, getFirebaseAuth} from '../auth';
+import {parseCookies, parseTokens} from '../auth/cookies/sign';
+import {ServiceAccount} from '../auth/credential';
+import {CustomTokens, VerifiedTokens} from '../auth/custom-token';
+import {InvalidTokenError, InvalidTokenReason} from '../auth/error';
+import {mapJwtPayloadToDecodedIdToken} from '../auth/utils';
+import {debug, enableDebugMode} from '../debug';
+import {
+  CookiesObject,
+  areCookiesVerifiedByMiddleware,
+  isCookiesObjectVerifiedByMiddleware
+} from './cookies';
+import {getReferer} from './utils';
 
 export interface GetTokensOptions extends GetCookiesTokensOptions {
-  serviceAccount: ServiceAccount;
+  serviceAccount?: ServiceAccount;
   apiKey: string;
+  debug?: boolean;
+  headers?: Headers;
 }
 
 export function validateOptions(options: GetTokensOptions) {
-  if (!options.cookieSignatureKeys.length) {
+  if (!options.cookieSignatureKeys.length || !options.cookieSignatureKeys[0]) {
     throw new Error(
-      "You should provide at least one cookie signature encryption key"
+      `Expected cookieSignatureKeys to contain at least one signature key. Received: ${JSON.stringify(
+        options.cookieSignatureKeys
+      )}`
     );
   }
 }
@@ -26,91 +41,189 @@ export interface GetCookiesTokensOptions {
 export async function getRequestCookiesTokens(
   cookies: RequestCookies | ReadonlyRequestCookies,
   options: GetCookiesTokensOptions
-): Promise<IdAndRefreshTokens | null> {
+): Promise<CustomTokens> {
   const signedCookie = cookies.get(options.cookieName);
-  const signatureCookie = cookies.get(
-    getSignatureCookieName(options.cookieName)
-  );
+  const signatureCookie = cookies.get(`${options.cookieName}.sig`);
+  const customCookie = cookies.get(`${options.cookieName}.custom`);
 
-  if (!signedCookie || !signatureCookie) {
+  const enableMultipleCookies = signatureCookie?.value && customCookie?.value;
+
+  if (!signedCookie?.value) {
+    debug('Missing authentication cookies');
+
+    throw new InvalidTokenError(InvalidTokenReason.MISSING_CREDENTIALS);
+  }
+
+  if (enableMultipleCookies) {
+    return parseCookies(
+      {
+        signed: signedCookie.value,
+        custom: customCookie.value,
+        signature: signatureCookie.value
+      },
+      options.cookieSignatureKeys
+    );
+  }
+
+  return parseTokens(signedCookie.value, options.cookieSignatureKeys);
+}
+
+function toTokens(result: VerifiedTokens | null): Tokens | null {
+  if (!result) {
     return null;
   }
 
-  const cookie = await get(options.cookieSignatureKeys)({
-    signedCookie,
-    signatureCookie,
-  });
-
-  if (!cookie?.value) {
-    return null;
-  }
-
-  return JSON.parse(cookie.value) as IdAndRefreshTokens;
+  return {
+    token: result.idToken,
+    decodedToken: result.decodedIdToken,
+    customToken: result.customToken
+  };
 }
 
 export async function getTokens(
   cookies: RequestCookies | ReadonlyRequestCookies,
   options: GetTokensOptions
 ): Promise<Tokens | null> {
+  if (options.debug) {
+    enableDebugMode();
+  }
+
   validateOptions(options);
 
-  const { verifyAndRefreshExpiredIdToken } = getFirebaseAuth(
-    options.serviceAccount,
-    options.apiKey
-  );
+  const referer = options.headers ? getReferer(options.headers) : '';
 
-  const tokens = await getRequestCookiesTokens(cookies, options);
-
-  if (!tokens) {
-    return null;
-  }
-
-  return verifyAndRefreshExpiredIdToken(tokens.idToken, tokens.refreshToken);
-}
-
-async function getCookiesTokens(
-  cookies: Partial<{ [K in string]: string }>,
-  options: GetCookiesTokensOptions
-): Promise<IdAndRefreshTokens | null> {
-  const signedCookie = cookies[options.cookieName];
-  const signatureCookie = cookies[getSignatureCookieName(options.cookieName)];
-
-  if (!signedCookie || !signatureCookie) {
-    return null;
-  }
-
-  const cookie = await get(options.cookieSignatureKeys)({
-    signedCookie: {
-      name: options.cookieName,
-      value: signedCookie,
-    },
-    signatureCookie: {
-      name: getSignatureCookieName(options.cookieName),
-      value: signatureCookie,
-    },
+  const {verifyAndRefreshExpiredIdToken} = getFirebaseAuth({
+    serviceAccount: options.serviceAccount,
+    apiKey: options.apiKey
   });
 
-  if (!cookie?.value) {
-    return null;
-  }
+  try {
+    const tokens = await getRequestCookiesTokens(cookies, options);
 
-  return JSON.parse(cookie.value) as IdAndRefreshTokens;
+    if (areCookiesVerifiedByMiddleware(cookies)) {
+      const payload = decodeJwt(tokens.idToken);
+
+      return {
+        token: tokens.idToken,
+        decodedToken: mapJwtPayloadToDecodedIdToken(payload),
+        customToken: tokens.customToken
+      };
+    }
+
+    const result = await verifyAndRefreshExpiredIdToken(tokens, {referer});
+
+    return toTokens(result);
+  } catch (error: unknown) {
+    if (error instanceof InvalidTokenError) {
+      debug(
+        `Token is missing or has incorrect formatting. This is expected and usually means that user has not yet logged in`,
+        {
+          reason: error.reason
+        }
+      );
+      return null;
+    }
+
+    throw error;
+  }
 }
 
-export async function getTokensFromObject(
-  cookies: Partial<{ [K in string]: string }>,
-  options: GetTokensOptions
-): Promise<Tokens | null> {
-  const { verifyAndRefreshExpiredIdToken } = getFirebaseAuth(
-    options.serviceAccount,
-    options.apiKey
-  );
+export async function getCookiesTokens(
+  cookies: Partial<{[K in string]: string}>,
+  options: GetCookiesTokensOptions
+): Promise<CustomTokens> {
+  const signedCookie = cookies[options.cookieName];
+  const signatureCookie = cookies[`${options.cookieName}.sig`];
+  const customCookie = cookies[`${options.cookieName}.custom`];
+  const enableMultipleCookie = signatureCookie && customCookie;
 
-  const tokens = await getCookiesTokens(cookies, options);
-
-  if (!tokens) {
-    return null;
+  if (!signedCookie) {
+    throw new InvalidTokenError(InvalidTokenReason.MISSING_CREDENTIALS);
   }
 
-  return verifyAndRefreshExpiredIdToken(tokens.idToken, tokens.refreshToken);
+  if (enableMultipleCookie) {
+    return await parseCookies(
+      {
+        signed: signedCookie,
+        custom: customCookie,
+        signature: signatureCookie
+      },
+      options.cookieSignatureKeys
+    );
+  }
+
+  return await parseTokens(signedCookie, options.cookieSignatureKeys);
+}
+
+export async function getApiRequestTokens(
+  request: NextApiRequest,
+  options: GetTokensOptions
+): Promise<Tokens | null> {
+  const referer = request.headers.referer ?? '';
+  const {verifyAndRefreshExpiredIdToken} = getFirebaseAuth({
+    serviceAccount: options.serviceAccount,
+    apiKey: options.apiKey
+  });
+
+  try {
+    const tokens = await getCookiesTokens(request.cookies, options);
+
+    if (isCookiesObjectVerifiedByMiddleware(request.cookies)) {
+      const payload = decodeJwt(tokens.idToken);
+
+      return {
+        token: tokens.idToken,
+        decodedToken: mapJwtPayloadToDecodedIdToken(payload),
+        customToken: tokens.customToken
+      };
+    }
+
+    return toTokens(await verifyAndRefreshExpiredIdToken(tokens, {referer}));
+  } catch (error: unknown) {
+    if (error instanceof InvalidTokenError) {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
+/**
+ * @deprecated
+ * Use `getApiRequestTokens` instead
+ */
+export async function getTokensFromObject(
+  cookies: CookiesObject,
+  options: GetTokensOptions
+): Promise<Tokens | null> {
+  const {verifyAndRefreshExpiredIdToken} = getFirebaseAuth({
+    serviceAccount: options.serviceAccount,
+    apiKey: options.apiKey
+  });
+
+  try {
+    const tokens = await getCookiesTokens(cookies, options);
+
+    if (isCookiesObjectVerifiedByMiddleware(cookies)) {
+      const payload = decodeJwt(tokens.idToken);
+
+      return {
+        token: tokens.idToken,
+        decodedToken: mapJwtPayloadToDecodedIdToken(payload),
+        customToken: tokens.customToken
+      };
+    }
+
+    return toTokens(
+      await verifyAndRefreshExpiredIdToken(tokens, {
+        referer: ''
+      })
+    );
+  } catch (error: unknown) {
+    if (error instanceof InvalidTokenError) {
+      return null;
+    }
+
+    throw error;
+  }
 }

@@ -3,17 +3,10 @@ name: Main
 on:
   pull_request:
     paths:
-      - '**'
-      - '!*.md'
-      - '!**/*.md'
-      - '!.gitignore'
-  push:
-    branches: [ main ]
-    paths:
-      - '**'
-      - '!*.md'
-      - '!**/*.md'
-      - '!.gitignore'
+      - "**"
+      - "!*.md"
+      - "!**/*.md"
+      - "!.gitignore"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -25,6 +18,8 @@ env:
   FIREBASE_ADMIN_CLIENT_EMAIL: ${{ secrets.FIREBASE_ADMIN_CLIENT_EMAIL }}
   FIREBASE_ADMIN_PRIVATE_KEY: ${{ secrets.FIREBASE_ADMIN_PRIVATE_KEY }}
   FIREBASE_AUTH_TENANT_ID: ${{ secrets.FIREBASE_AUTH_TENANT_ID }}
+  FIREBASE_APP_CHECK_KEY: ${{ secrets.FIREBASE_APP_CHECK_KEY }}
+  FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
 jobs:
   install:
     name: Install dependencies
@@ -35,7 +30,7 @@ jobs:
       - name: Use Node.js 18
         uses: actions/setup-node@v3
         with:
-          cache: 'yarn'
+          cache: "yarn"
           cache-dependency-path: yarn.lock
           node-version: 18
       - name: Cache node_modules
@@ -43,9 +38,9 @@ jobs:
         with:
           path: |
             node_modules
-          key: ${{ runner.os }}-node_modules-cache-v1-${{ hashFiles('./yarn.lock') }}-${{github.sha}}
+          key: ${{ runner.os }}-node_modules-cache-v2-${{ hashFiles('./yarn.lock') }}-${{github.sha}}
           restore-keys: |
-            ${{ runner.os }}-node_modules-cache-v1-${{ hashFiles('./yarn.lock') }}-
+            ${{ runner.os }}-node_modules-cache-v2-${{ hashFiles('./yarn.lock') }}-
       - run: yarn install
 
   build:
@@ -64,15 +59,15 @@ jobs:
         with:
           path: |
             node_modules
-          key: ${{ runner.os }}-node_modules-cache-v1-${{ hashFiles('./yarn.lock') }}-${{github.sha}}
+          key: ${{ runner.os }}-node_modules-cache-v2-${{ hashFiles('./yarn.lock') }}-${{github.sha}}
       - name: Cache build
         uses: actions/cache@v3
         with:
           path: |
-            packages/**/lib
-          key: ${{ runner.os }}-build-cache-v1-${{ github.ref_name }}-${{github.sha}}
+            lib
+          key: ${{ runner.os }}-build-cache-v2-${{ github.ref_name }}-${{github.sha}}
           restore-keys: |
-            ${{ runner.os }}-build-cache-v1-${{ github.ref_name }}-
+            ${{ runner.os }}-build-cache-v2-${{ github.ref_name }}-
       - run: yarn build
 
   lint:
@@ -91,7 +86,7 @@ jobs:
         with:
           path: |
             node_modules
-          key: ${{ runner.os }}-node_modules-cache-v1-${{ hashFiles('./yarn.lock') }}-${{github.sha}}
+          key: ${{ runner.os }}-node_modules-cache-v2-${{ hashFiles('./yarn.lock') }}-${{github.sha}}
       - run: yarn lint
 
   tests:
@@ -110,11 +105,11 @@ jobs:
         with:
           path: |
             node_modules
-          key: ${{ runner.os }}-node_modules-cache-v1-${{ hashFiles('./yarn.lock') }}-${{github.sha}}
+          key: ${{ runner.os }}-node_modules-cache-v2-${{ hashFiles('./yarn.lock') }}-${{github.sha}}
       - name: Cache build
         uses: actions/cache@v3
         with:
           path: |
-            packages/**/lib
-          key: ${{ runner.os }}-build-cache-v1-${{ github.ref_name }}-${{github.sha}}
+            lib
+          key: ${{ runner.os }}-build-cache-v2-${{ github.ref_name }}-${{github.sha}}
       - run: yarn test
