@@ -5,9 +5,9 @@ import {
   UpdateRequest
 } from './auth-request-handler';
 import {
+  Credential,
   ServiceAccount,
-  ServiceAccountCredential,
-  Credential
+  ServiceAccountCredential
 } from './credential';
 import {CustomTokens, VerifiedTokens} from './custom-token';
 import {getApplicationDefault} from './default-credential';
@@ -102,8 +102,8 @@ export async function customTokenToIdAndRefreshTokens(
   }
 
   return {
-    idToken: refreshTokenJSON.idToken,
-    refreshToken: refreshTokenJSON.refreshToken
+    idToken: refreshTokenJSON.idToken as string,
+    refreshToken: refreshTokenJSON.refreshToken as string
   };
 }
 
@@ -188,11 +188,11 @@ export async function handleExpiredToken<T>(
 ): Promise<T> {
   try {
     return await verifyIdToken();
-  } catch (e: any) {
+  } catch (e: unknown) {
     switch ((e as AuthError).code) {
       case AuthErrorCode.TOKEN_EXPIRED:
         try {
-          return await onExpired(e);
+          return await onExpired(e as AuthError);
         } catch (e) {
           return onError(e);
         }
@@ -272,8 +272,7 @@ function getAuth(options: AuthOptions) {
   };
 
   async function getUser(uid: string): Promise<UserRecord | null> {
-    return authRequestHandler.getAccountInfoByUid(uid).then((response: any) => {
-      // Returns the user record populated with server response.
+    return authRequestHandler.getAccountInfoByUid(uid).then((response) => {
       return response.users?.length ? new UserRecord(response.users[0]) : null;
     });
   }
@@ -349,7 +348,9 @@ function getAuth(options: AuthOptions) {
 
   async function verifyAndRefreshExpiredIdToken(
     customTokens: CustomTokens,
-    verifyOptions: VerifyOptions = DEFAULT_VERIFY_OPTIONS
+    verifyOptions: VerifyOptions & {
+      onTokenRefresh?: (tokens: VerifiedTokens) => Promise<void>;
+    } = DEFAULT_VERIFY_OPTIONS
   ): Promise<VerifiedTokens> {
     return await handleExpiredToken(
       async () => {
@@ -366,9 +367,13 @@ function getAuth(options: AuthOptions) {
       },
       async () => {
         if (customTokens.refreshToken) {
-          return handleTokenRefresh(customTokens.refreshToken, {
+          const result = await handleTokenRefresh(customTokens.refreshToken, {
             referer: verifyOptions.referer
           });
+
+          await verifyOptions.onTokenRefresh?.(result);
+
+          return result;
         }
 
         throw new InvalidTokenError(InvalidTokenReason.MISSING_REFRESH_TOKEN);
@@ -381,7 +386,7 @@ function getAuth(options: AuthOptions) {
 
   function createCustomToken(
     uid: string,
-    developerClaims?: object
+    developerClaims?: {[key: string]: unknown}
   ): Promise<string> {
     return tokenGenerator.createCustomToken(uid, developerClaims);
   }

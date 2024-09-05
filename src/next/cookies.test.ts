@@ -1,3 +1,5 @@
+import {NextResponse} from 'next/server';
+import type {NextRequest} from 'next/server';
 import {
   SetAuthCookiesOptions,
   appendAuthCookies,
@@ -44,12 +46,12 @@ const MOCK_REQUEST = {
   headers: {
     get: jest.fn()
   }
-} as unknown as jest.Mocked<any>;
+} as unknown as jest.Mocked<NextRequest>;
 
 const MOCK_OPTIONS: SetAuthCookiesOptions = {
   cookieName: 'TestCookie',
   cookieSignatureKeys: [secret],
-  cookieSerializeOptions: {},
+  cookieSerializeOptions: {maxAge: 123, path: '/test-path', sameSite: 'lax'},
   apiKey: 'API_KEY'
 };
 
@@ -69,7 +71,7 @@ describe('cookies', () => {
       headers: {
         append: jest.fn()
       }
-    } as unknown as jest.Mocked<any> & jest.Mocked<Response>;
+    } as unknown as jest.Mocked<NextResponse>;
     const result = await refreshCredentials(
       MOCK_REQUEST,
       MOCK_OPTIONS,
@@ -78,12 +80,13 @@ describe('cookies', () => {
 
     expect(MOCK_REQUEST.cookies.set).toHaveBeenCalledWith(
       'TestCookie',
-      refreshedJwt
+      refreshedJwt,
+      {maxAge: 123, path: '/test-path', sameSite: 'lax'}
     );
 
     expect(MOCK_RESPONSE.headers.append).toHaveBeenCalledWith(
       'Set-Cookie',
-      `TestCookie=${refreshedJwt}`
+      `TestCookie=${refreshedJwt}; Max-Age=123; Path=/test-path; SameSite=Lax`
     );
 
     expect(result).toBe(MOCK_RESPONSE);
@@ -94,14 +97,14 @@ describe('cookies', () => {
       headers: {
         append: jest.fn()
       }
-    } as unknown as jest.Mocked<any> & jest.Mocked<Response>;
+    } as unknown as jest.Mocked<NextResponse>;
     const result = await refreshCredentials(MOCK_REQUEST, MOCK_OPTIONS, () =>
       Promise.resolve(MOCK_RESPONSE)
     );
 
     expect(MOCK_RESPONSE.headers.append).toHaveBeenCalledWith(
       'Set-Cookie',
-      `TestCookie=${refreshedJwt}`
+      `TestCookie=${refreshedJwt}; Max-Age=123; Path=/test-path; SameSite=Lax`
     );
 
     expect(result).toBe(MOCK_RESPONSE);
@@ -112,7 +115,7 @@ describe('cookies', () => {
       headers: {
         append: jest.fn()
       }
-    } as unknown as jest.Mocked<any> & jest.Mocked<Response>;
+    } as unknown as jest.Mocked<NextResponse>;
     const result = await refreshCredentials(
       MOCK_REQUEST,
       {...MOCK_OPTIONS, enableMultipleCookies: true},
@@ -122,19 +125,19 @@ describe('cookies', () => {
     expect(MOCK_RESPONSE.headers.append).toHaveBeenNthCalledWith(
       1,
       'Set-Cookie',
-      'TestCookie=TEST_ID_TOKEN%3ATEST_REFRESH_TOKEN'
+      'TestCookie=TEST_ID_TOKEN%3ATEST_REFRESH_TOKEN; Max-Age=123; Path=/test-path; SameSite=Lax'
     );
 
     expect(MOCK_RESPONSE.headers.append).toHaveBeenNthCalledWith(
       2,
       'Set-Cookie',
-      'TestCookie.custom=TEST_CUSTOM_TOKEN'
+      'TestCookie.custom=TEST_CUSTOM_TOKEN; Max-Age=123; Path=/test-path; SameSite=Lax'
     );
 
     expect(MOCK_RESPONSE.headers.append).toHaveBeenNthCalledWith(
       3,
       'Set-Cookie',
-      'TestCookie.sig=MqBNRBcWwj7xL948-Yy89kj5dwPEf7fTACNx93rOFX4'
+      'TestCookie.sig=MqBNRBcWwj7xL948-Yy89kj5dwPEf7fTACNx93rOFX4; Max-Age=123; Path=/test-path; SameSite=Lax'
     );
 
     expect(result).toBe(MOCK_RESPONSE);
@@ -145,7 +148,7 @@ describe('cookies', () => {
       headers: {
         append: jest.fn()
       }
-    } as unknown as jest.Mocked<any> & jest.Mocked<Response>;
+    } as unknown as jest.Mocked<NextResponse>;
     await appendAuthCookies(MOCK_RESPONSE, customTokens, {
       ...MOCK_OPTIONS,
       enableMultipleCookies: true
@@ -154,19 +157,19 @@ describe('cookies', () => {
     expect(MOCK_RESPONSE.headers.append).toHaveBeenNthCalledWith(
       1,
       'Set-Cookie',
-      'TestCookie=MOCK_ID_TOKEN%3AMOCK_REFRESH_TOKEN'
+      'TestCookie=MOCK_ID_TOKEN%3AMOCK_REFRESH_TOKEN; Max-Age=123; Path=/test-path; SameSite=Lax'
     );
 
     expect(MOCK_RESPONSE.headers.append).toHaveBeenNthCalledWith(
       2,
       'Set-Cookie',
-      'TestCookie.custom=MOCK_CUSTOM_TOKEN'
+      'TestCookie.custom=MOCK_CUSTOM_TOKEN; Max-Age=123; Path=/test-path; SameSite=Lax'
     );
 
     expect(MOCK_RESPONSE.headers.append).toHaveBeenNthCalledWith(
       3,
       'Set-Cookie',
-      'TestCookie.sig=AuSOlUSJENTLtShQpjf7SMRiPY4aILyFNmjr7Tc3Fig'
+      'TestCookie.sig=AuSOlUSJENTLtShQpjf7SMRiPY4aILyFNmjr7Tc3Fig; Max-Age=123; Path=/test-path; SameSite=Lax'
     );
   });
 });
