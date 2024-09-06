@@ -1,5 +1,5 @@
 import {NextResponse} from 'next/server';
-import type { NextRequest } from 'next/server';
+import type {NextRequest} from 'next/server';
 import {
   authMiddleware,
   redirectToHome,
@@ -14,12 +14,15 @@ export async function middleware(request: NextRequest) {
     loginPath: '/api/login',
     logoutPath: '/api/logout',
     refreshTokenPath: '/api/refresh-token',
+    debug: authConfig.debug,
     enableMultipleCookies: authConfig.enableMultipleCookies,
     apiKey: authConfig.apiKey,
     cookieName: authConfig.cookieName,
     cookieSerializeOptions: authConfig.cookieSerializeOptions,
     cookieSignatureKeys: authConfig.cookieSignatureKeys,
     serviceAccount: authConfig.serviceAccount,
+    experimental_enableTokenRefreshOnExpiredKidHeader:
+      authConfig.experimental_enableTokenRefreshOnExpiredKidHeader,
     handleValidToken: async ({token, decodedToken, customToken}, headers) => {
       // Authenticated user should not be able to access /login, /register and /reset-password routes
       if (PUBLIC_PATHS.includes(request.nextUrl.pathname)) {

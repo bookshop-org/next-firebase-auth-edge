@@ -1,3 +1,17 @@
+# [1.7.0-canary.15](https://github.com/awinogrodzki/next-firebase-auth-edge/compare/v1.7.0-canary.14...v1.7.0-canary.15) (2024-09-06)
+
+
+### Bug Fixes
+
+* add debug logs for experimental feature ([41ef1df](https://github.com/awinogrodzki/next-firebase-auth-edge/commit/41ef1dfcf6fe23a7dabfa4e8d3cc5e2c1172b31e))
+
+# [1.7.0-canary.14](https://github.com/awinogrodzki/next-firebase-auth-edge/compare/v1.7.0-canary.13...v1.7.0-canary.14) (2024-09-06)
+
+
+### Features
+
+* experimental option to refresh token on expired kid header ([2869531](https://github.com/awinogrodzki/next-firebase-auth-edge/commit/28695315164fffee7b3a08879e95033c44b8a197))
+
 # [1.7.0-canary.13](https://github.com/awinogrodzki/next-firebase-auth-edge/compare/v1.7.0-canary.12...v1.7.0-canary.13) (2024-09-03)
 
 
